@@ -6,7 +6,7 @@ import ..HTTP
 using ..IOExtras
 using ..Streams
 import ..ConnectionPool
-using HTTP: header, headercontains
+using HTTP: header
 import ..@debug, ..DEBUG_LEVEL, ..@require, ..precondition_error
 import ..string
 
@@ -53,7 +53,8 @@ end
 function is_upgrade(r::HTTP.Message)
     ((r isa HTTP.Request && r.method == "GET") ||
      (r isa HTTP.Response && r.status == 101)) &&
-    HTTP.headercontains(r, "Connection", "upgrade") &&
+    (HTTP.hasheader(r, "Connection", "upgrade") ||
+     HTTP.hasheader(r, "Connection", "keep-alive, upgrade")) &&
     HTTP.hasheader(r, "Upgrade", "websocket")
 end
 
@@ -64,7 +65,8 @@ function check_upgrade(http)
                                 "$(http.message)"))
     end
 
-    if !headercontains(http, "Connection", "upgrade")
+    if !(hasheader(http, "Connection", "upgrade") ||
+         hasheader(http, "Connection", "keep-alive, upgrade"))
         throw(WebSocketError(0, "Expected \"Connection: upgrade\"!\n" *
                                 "$(http.message)"))
     end
@@ -164,15 +166,11 @@ function Base.write(ws::WebSocket, x1, x2, xs...)
     return n
 end
 
-function IOExtras.closewrite(ws::WebSocket; statuscode=nothing)
+function IOExtras.closewrite(ws::WebSocket)
     @require !ws.txclosed
     opcode = WS_FINAL | WS_CLOSE
     @debug 1 "WebSocket ⬅️  $(WebSocketHeader(opcode, 0x00))"
-    if statuscode === nothing
-        write(ws.io, [opcode, 0x00])
-    else
-        wswrite(ws, opcode, reinterpret(UInt8, [hton(UInt16(statuscode))]))
-    end
+    write(ws.io, [opcode, 0x00])
     ws.txclosed = true
 end
 
@@ -214,16 +212,12 @@ function mask!(to, from, l, mask=rand(UInt8, 4))
     return mask
 end
 
-function Base.close(ws::WebSocket; statuscode::Union{Int, Nothing}=nothing)
+function Base.close(ws::WebSocket)
     if !ws.txclosed
-        closewrite(ws; statuscode=statuscode)
+        closewrite(ws)
     end
     while !eof(ws) # FIXME Timeout in case other end does not send CLOSE?
-        try
-            readframe(ws)
-        catch e
-            e isa WebSocketError || rethrow(e)
-        end
+        readframe(ws)
     end
     close(ws.io)
 end
